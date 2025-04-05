@@ -190,44 +190,48 @@ def scrape_phonedb_devices(brand, page=0):
         print(f"Error scraping {brand} (page {page}): {str(e)}")
         return [], 0
 
-def save_devices_to_file(devices, brand, mode='w'):
+def save_devices_to_file(devices, brand, mode='w', output_dir=None):
     """
     Saves devices to a JSON file
 
     Args:
         devices: List of device dictionaries
         brand: Brand name
-        mode: File open mode ('w' for write/overwrite, 'a' for append)
+        mode: File open mode ('w' for write, 'a' for append)
+        output_dir: Directory where device lists should be saved (default: data/devices_list)
     """
     if not devices:
         print(f"No devices to save for {brand}")
         return
 
-    devices_list_dir = os.path.join('data', 'devices_list')
-    ensure_directory(devices_list_dir)
+    if output_dir is None:
+        output_dir = os.path.join('data', 'devices_list')
 
-    filename = os.path.join(devices_list_dir, f"{brand.lower()}_devices.json")
+    ensure_directory(output_dir)
+
+    filename = os.path.join(output_dir, f"{brand.lower()}_devices.json")
 
     if mode == 'a' and os.path.exists(filename):
-        try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                existing_data = json.load(f)
+        with open(filename, 'r', encoding='utf-8') as f:
+            try:
+                existing_devices = json.load(f)
+            except json.JSONDecodeError:
+                existing_devices = []
+                print(f"Warning: Existing file was invalid JSON. Creating a new one.")
+                mode = 'w'
 
-            combined_data = existing_data + devices
+        existing_devices.extend(devices)
 
-            print(f"Appending {len(devices)} {brand} devices to {filename}")
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(existing_devices, f, indent=4, ensure_ascii=False)
 
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(combined_data, f, indent=4, ensure_ascii=False)
+        print(f"Appended {len(devices)} devices to existing file. Total: {len(existing_devices)}")
+        print(f"Updated {filename}")
+    elif mode == 'w':
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(devices, f, indent=4, ensure_ascii=False)
 
-            print(f"Successfully saved {len(combined_data)} total {brand} devices to {filename}")
-
-        except Exception as e:
-            print(f"Error appending to file {filename}: {str(e)}")
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(devices, f, indent=4, ensure_ascii=False)
-
-            print(f"Created new file with {len(devices)} {brand} devices to {filename}")
+        print(f"Created new file with {len(devices)} {brand} devices to {filename}")
     else:
         print(f"Writing {len(devices)} {brand} devices to {filename}")
 
@@ -236,13 +240,14 @@ def save_devices_to_file(devices, brand, mode='w'):
 
         print(f"Successfully saved {brand} devices to {filename}")
 
-def scrape_brand_devices(brand, update_mode=False):
+def scrape_brand_devices(brand, update_mode=False, output_dir=None):
     """
     Scrapes all devices for a specific brand by iterating through all result pages
 
     Args:
         brand: Brand name to be scraped (e.g. Samsung, Apple)
         update_mode: If True, updates the existing list instead of recreating it
+        output_dir: Directory where device lists should be saved (default: data/devices_list)
 
     Returns:
         total_devices_collected: Total number of devices collected
@@ -257,8 +262,11 @@ def scrape_brand_devices(brand, update_mode=False):
 
     print(f"Starting to scrape all {brand} devices...")
 
-    devices_list_dir = os.path.join('data', 'devices_list')
-    filename = os.path.join(devices_list_dir, f"{brand.lower()}_devices.json")
+    if output_dir is None:
+        output_dir = os.path.join('data', 'devices_list')
+
+    ensure_directory(output_dir)
+    filename = os.path.join(output_dir, f"{brand.lower()}_devices.json")
 
     if update_mode and os.path.exists(filename):
         try:
@@ -317,7 +325,7 @@ def scrape_brand_devices(brand, update_mode=False):
                 print(f"Updated file with {len(existing_devices)} total devices")
         else:
             mode = 'w' if page == 0 else 'a'
-            save_devices_to_file(devices, brand, mode)
+            save_devices_to_file(devices, brand, mode, output_dir)
 
         total_devices_collected += len(devices)
         print(f"Collected {len(devices)} devices from page {page+1}. Total so far: {total_devices_collected}")

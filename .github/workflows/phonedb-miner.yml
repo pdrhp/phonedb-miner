@@ -1,0 +1,166 @@
+name: PhoneDB Data Mining
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+env:
+  DATA_REPO: phonedb-miner-data
+  GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+  BRANDS: "Samsung LG Apple Lenovo Motorola Nokia Xiaomi"
+
+jobs:
+  check-data-repo:
+    runs-on: ubuntu-latest
+    outputs:
+      repo-exists: ${{ steps.check-repo.outputs.exists }}
+    steps:
+      - name: Check if data repository exists
+        id: check-repo
+        run: |
+          if curl -s -H "Authorization: token ${{ secrets.GH_TOKEN }}" https://api.github.com/repos/${{ github.repository_owner }}/${{ env.DATA_REPO }} | grep -q '"id"'; then
+            echo "Repository exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Repository does not exist"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create data repository if it doesn't exist
+        if: steps.check-repo.outputs.exists == 'false'
+        run: |
+          curl -X POST -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/user/repos \
+          -d '{"name":"${{ env.DATA_REPO }}","description":"Data repository for PhoneDB miner","private":false,"auto_init":true}'
+          echo "Created repository ${{ env.DATA_REPO }}"
+
+  mine-device-lists:
+    needs: check-data-repo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Check for existing artifact
+        id: check-artifact
+        run: |
+          ARTIFACT_EXISTS=$(gh api repos/${{ github.repository }}/actions/artifacts -q '.artifacts[] | select(.name=="device-lists") | .id' || echo "")
+          if [ -n "$ARTIFACT_EXISTS" ]; then
+            echo "artifact-exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "artifact-exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download existing artifact if available
+        if: steps.check-artifact.outputs.artifact-exists == 'true'
+        run: |
+          mkdir -p data/devices_list
+          gh api repos/${{ github.repository }}/actions/artifacts -q '.artifacts[] | select(.name=="device-lists") | .id' | xargs -I{} \
+          gh api repos/${{ github.repository }}/actions/artifacts/{}/zip -H "Accept: application/vnd.github.v3+json" --output artifact.zip
+          unzip -o artifact.zip -d data/devices_list
+          rm artifact.zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mine device lists for all brands
+        run: |
+          mkdir -p data/devices_list
+          for brand in ${{ env.BRANDS }}; do
+            echo "Processing brand: $brand"
+
+            if [ -f "data/devices_list/${brand,,}_devices.json" ]; then
+              echo "Updating existing device list for $brand"
+              python phonedb-cli.py list $brand --update
+            else
+              echo "Creating new device list for $brand"
+              python phonedb-cli.py list $brand
+            fi
+          done
+
+      - name: Upload device lists as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: device-lists
+          path: data/devices_list
+          retention-days: 90
+
+  extract-device-details:
+    needs: [check-data-repo, mine-device-lists]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Checkout data repository
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ github.repository_owner }}/${{ env.DATA_REPO }}
+          path: phonedb-data
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Download device lists from artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: device-lists
+          path: data/devices_list
+
+      - name: Extract device details for all brands
+        run: |
+          mkdir -p data/device_detail_list
+
+          if [ -d "phonedb-data/device_detail_list" ]; then
+            cp -r phonedb-data/device_detail_list/* data/device_detail_list/ || true
+            echo "Copied existing device details from data repository"
+          fi
+
+          for brand in ${{ env.BRANDS }}; do
+            echo "Processing details for brand: $brand"
+
+            if [ -f "data/device_detail_list/${brand,,}_devices.json" ]; then
+              echo "Updating existing device details for $brand"
+              python phonedb-cli.py extract $brand --update
+            else
+              echo "Creating new device details for $brand"
+              python phonedb-cli.py extract $brand
+            fi
+          done
+
+      - name: Push data to repository
+        run: |
+          mkdir -p phonedb-data/devices_list
+          mkdir -p phonedb-data/device_detail_list
+
+          cp -r data/devices_list/* phonedb-data/devices_list/ || true
+          cp -r data/device_detail_list/* phonedb-data/device_detail_list/ || true
+
+          cd phonedb-data
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
+          git add -A
+          git diff --cached --quiet || git commit -m "Update PhoneDB data - $(date +'%Y-%m-%d %H:%M:%S')"
+          git push

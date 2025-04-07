@@ -69,8 +69,13 @@ jobs:
         if: steps.check-artifact.outputs.artifact-exists == 'true'
         run: |
           mkdir -p data/devices_list
-          gh api repos/${{ github.repository }}/actions/artifacts -q '.artifacts[] | select(.name=="device-lists") | .id' | xargs -I{} \
-          gh api repos/${{ github.repository }}/actions/artifacts/{}/zip -H "Accept: application/vnd.github.v3+json" --output artifact.zip
+          # Obter o ID do artefato mais recente
+          ARTIFACT_ID=$(gh api repos/${{ github.repository }}/actions/artifacts -q '.artifacts[] | select(.name=="device-lists") | .id' | head -n 1)
+
+          # Baixar o artefato para um arquivo zip temporário
+          gh api repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip > artifact.zip
+
+          # Extrair o arquivo zip e remover
           unzip -o artifact.zip -d data/devices_list
           rm artifact.zip
         env:
